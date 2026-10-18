@@ -1,0 +1,128 @@
+
+name: Daily Hisaab PRO Android Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+          yes | sdkmanager --licenses
+
+      - name: Extract uploaded project ZIP if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f settings.gradle ] && \
+             [ ! -f settings.gradle.kts ] && \
+             [ -z "$(find . -maxdepth 2 \
+               \( -name settings.gradle \
+               -o -name settings.gradle.kts \) \
+               -print -quit)" ]; then
+
+            ZIP_FILE="$(find . -maxdepth 2 -type f \
+              -iname '*.zip' -print -quit)"
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: No Gradle project or project ZIP found."
+              exit 1
+            fi
+
+            mkdir -p extracted
+            unzip -q "$ZIP_FILE" -d extracted
+          fi
+
+          PROJECT_SETTINGS="$(find . -type f \
+            \( -name settings.gradle \
+            -o -name settings.gradle.kts \) \
+            -not -path './.git/*' \
+            -not -path './.gradle/*' \
+            -print -quit)"
+
+          if [ -z "$PROJECT_SETTINGS" ]; then
+            PROJECT_SETTINGS="$(find extracted -type f \
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \) \
+              -print -quit 2>/dev/null || true)"
+          fi
+
+          if [ -z "$PROJECT_SETTINGS" ]; then
+            echo "ERROR: Gradle settings file not found."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_SETTINGS")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Verify project files
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          test -d app
+          test -f app/build.gradle.kts -o \
+               -f app/build.gradle
+          gradle --version
+
+      - name: Build Release APK
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          gradle --no-daemon clean assembleRelease
+
+      - name: Find APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/release" \
+            -type f -name '*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: Release APK not found."
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/release"
+          cp "$APK" "$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO-release.apk"
+          cd "$GITHUB_WORKSPACE/release"
+          sha256sum Daily-Hisaab-PRO-release.apk \
+            > SHA256SUMS.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Daily-Hisaab-PRO-Release-APK
+          path: release/*
+          if-no-files-found: error
