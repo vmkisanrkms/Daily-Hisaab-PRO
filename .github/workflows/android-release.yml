@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android Release APK
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -27,98 +27,73 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 13114758
+          packages: |
+            platform-tools
+            platforms;android-36
+            build-tools;36.0.0
 
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -e
-          yes | sdkmanager --licenses || true
-
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-
-      - name: Locate or extract Android project
+      - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          sdkmanager --list_installed
+          test -d "$ANDROID_HOME/platforms/android-36"
+          test -d "$ANDROID_HOME/build-tools/36.0.0"
 
-          find_settings() {
-            find "$1" \
-              -type d \( -name .git -o -name .gradle \
-                -o -name build \) -prune -o \
-              -type f \( -name settings.gradle \
-                -o -name settings.gradle.kts \) \
-              -print -quit
-          }
+      - name: Locate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
+          ROOT="$GITHUB_WORKSPACE"
+
+          SETTINGS="$(find "$ROOT" \
+            -type d \( -name .git -o -name .gradle \
+              -o -name build \) -prune -o \
+            -type f \( -name settings.gradle \
+              -o -name settings.gradle.kts \) \
+            -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 4 -type f -iname '*.zip' \
-              -print -quit)"
+            ZIP_FILE="$(find "$ROOT" -maxdepth 4 \
+              -type f -iname '*.zip' -print -quit)"
 
             if [ -z "$ZIP_FILE" ]; then
-              echo "::error::No Android project or ZIP found."
-              echo "Upload the project ZIP or extract its files first."
+              echo "::error::Android project and ZIP not found."
               exit 1
             fi
 
-            mkdir -p "$RUNNER_TEMP/daily-hisaab-project"
-            unzip -q "$ZIP_FILE" \
-              -d "$RUNNER_TEMP/daily-hisaab-project"
+            mkdir -p "$RUNNER_TEMP/project"
+            unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/project"
 
-            SETTINGS="$(find_settings \
-              "$RUNNER_TEMP/daily-hisaab-project")"
+            SETTINGS="$(find "$RUNNER_TEMP/project" \
+              -type f \( -name settings.gradle \
+                -o -name settings.gradle.kts \) \
+              -print -quit)"
           fi
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle(.kts) not found."
-            echo "The ZIP may not contain the Android source project."
+            echo "::error::ZIP does not contain a Gradle project."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::The Android app directory is missing."
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::The app Gradle build file is missing."
+            echo "::error::Project app directory is missing."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project found at: $PROJECT_DIR"
+          echo "Found project: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-
-      - name: Verify Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-
-          echo "Checking project configuration..."
-          gradle --version
-
-          if [ ! -f settings.gradle ] && \
-             [ ! -f settings.gradle.kts ]; then
-            echo "::error::Gradle settings file missing."
-            exit 1
-          fi
 
       - name: Build Release APK
         shell: bash
@@ -127,44 +102,31 @@ jobs:
           cd "$PROJECT_DIR"
           gradle --no-daemon clean assembleRelease
 
-      - name: Verify and prepare APK
+      - name: Collect APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
-
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release output directory not found."
-            exit 1
-          fi
-
           APK="$(find "$APK_DIR" -maxdepth 1 \
             -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "::error::Release APK was not generated."
+            echo "::error::Release APK not found."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
-
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO-release.apk"
-
+          cp "$APK" "$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO.apk"
           cd "$GITHUB_WORKSPACE/release"
+          sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
 
-          sha256sum Daily-Hisaab-PRO-release.apk \
-            > SHA256SUMS.txt
-
-          echo "APK found and prepared."
-
-      - name: Upload Release APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Daily-Hisaab-PRO-Release-APK
           path: |
-            release/Daily-Hisaab-PRO-release.apk
+            release/Daily-Hisaab-PRO.apk
             release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
