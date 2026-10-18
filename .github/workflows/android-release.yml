@@ -3,8 +3,7 @@ name: Daily Hisaab PRO Android Release
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -28,16 +27,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            for CANDIDATE in \
+            for candidate in \
               /usr/local/lib/android/sdk \
               /opt/android-sdk \
               "$HOME/Android/Sdk"; do
-              if [ -d "$CANDIDATE" ]; then
-                SDK="$CANDIDATE"
+              if [ -d "$candidate" ]; then
+                SDK="$candidate"
                 break
               fi
             done
@@ -58,20 +56,13 @@ jobs:
 
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-
-          echo "SDK found at $SDK"
-          "$SDKMANAGER" --version
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager -print -quit)"
-
           "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-36" \
@@ -81,22 +72,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager -print -quit)"
-
-          yes | "$SDKMANAGER" --licenses || true
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
       - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
-
           test -d "$ANDROID_HOME/platform-tools"
           test -d "$ANDROID_HOME/platforms/android-36"
           test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
           test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
-
           echo "Android SDK verification passed."
 
       - name: Locate or extract Android project
@@ -106,48 +91,51 @@ jobs:
 
           find_settings() {
             find "$1" \
-              -type d \( -name .git -o -name .gradle \
-                -o -name build \) -prune -o \
-              -type f \( -name settings.gradle \
-                -o -name settings.gradle.kts \) \
-              -print -quit
+              -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
+              -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -print
           }
 
-          SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
+          SETTINGS="$(find_settings "$GITHUB_WORKSPACE" | head -n 1 || true)"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 5 -type f -iname '*.zip' \
-              -print -quit)"
+            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip"
 
-            if [ -z "$ZIP_FILE" ]; then
-              echo "::error::Android project or ZIP not found."
-              exit 1
+            if [ ! -f "$ZIP_FILE" ]; then
+              mapfile -t ZIPS < <(
+                find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -iname '*.zip' -print
+              )
+
+              if [ "${#ZIPS[@]}" -ne 1 ]; then
+                echo "::error::No Gradle project found and no unique source ZIP available."
+                printf '%s\n' "${ZIPS[@]:-No ZIP found}"
+                exit 1
+              fi
+
+              ZIP_FILE="${ZIPS[0]}"
             fi
 
-            mkdir -p "$RUNNER_TEMP/daily-hisaab-project"
-            unzip -q "$ZIP_FILE" \
-              -d "$RUNNER_TEMP/daily-hisaab-project"
-
-            SETTINGS="$(find_settings \
-              "$RUNNER_TEMP/daily-hisaab-project")"
+            EXTRACT_DIR="$RUNNER_TEMP/daily-hisaab-project"
+            mkdir -p "$EXTRACT_DIR"
+            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+            SETTINGS="$(find_settings "$EXTRACT_DIR" | head -n 1 || true)"
           fi
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::Gradle settings file not found."
+            echo "::error::settings.gradle(.kts) not found."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          if [ ! -d "$PROJECT_DIR/app" ]; then
+          test -d "$PROJECT_DIR/app" || {
             echo "::error::Android app directory not found."
             exit 1
-          fi
+          }
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::App Gradle build file not found."
+            echo "::error::app/build.gradle(.kts) not found."
             exit 1
           fi
 
@@ -159,36 +147,27 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Verify Gradle project
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-
-          gradle --version
-
-          test -f settings.gradle || \
-            test -f settings.gradle.kts
-
-          echo "Gradle project verification passed."
-
       - name: Build Release APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-
+          gradle --version
           gradle --no-daemon clean assembleRelease
 
       - name: Prepare signing key
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           set -euo pipefail
 
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing."
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || \
+             [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || \
+             [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "::error::Keystore secrets are missing."
             exit 1
           fi
 
@@ -197,21 +176,15 @@ jobs:
           chmod 700 "$SIGN_DIR"
 
           KEYSTORE="$SIGN_DIR/release.jks"
-
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" \
-            | base64 --decode > "$KEYSTORE"
-
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
           chmod 600 "$KEYSTORE"
 
-          if [ ! -s "$KEYSTORE" ]; then
-            echo "::error::Keystore file is empty."
-            exit 1
-          fi
+          test -s "$KEYSTORE"
+          keytool -list -keystore "$KEYSTORE" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
 
-          echo "SIGN_DIR=$SIGN_DIR" >> "$GITHUB_ENV"
           echo "KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
-
-          echo "Keystore file prepared."
 
       - name: Align, sign and verify APK
         shell: bash
@@ -225,27 +198,27 @@ jobs:
           if [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || \
              [ -z "$ANDROID_KEY_ALIAS" ] || \
              [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "::error::One or more signing secrets are missing."
+            echo "::error::Signing secrets are missing."
             exit 1
           fi
 
           TOOLS="$ANDROID_HOME/build-tools/36.0.0"
           APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
 
-          APK="$(find "$APK_DIR" -maxdepth 1 \
-            -type f -name '*.apk' -print -quit)"
+          mapfile -t APKS < <(
+            find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' -print
+          )
 
-          if [ -z "$APK" ]; then
-            echo "::error::Release APK was not generated."
+          if [ "${#APKS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one release APK; found ${#APKS[@]}."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
-
           ALIGNED="$RUNNER_TEMP/Daily-Hisaab-PRO-aligned.apk"
           SIGNED="$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO.apk"
 
-          "$TOOLS/zipalign" -f -p 4 "$APK" "$ALIGNED"
+          "$TOOLS/zipalign" -f -p 4 "${APKS[0]}" "$ALIGNED"
 
           "$TOOLS/apksigner" sign \
             --ks "$KEYSTORE" \
@@ -255,17 +228,11 @@ jobs:
             --out "$SIGNED" \
             "$ALIGNED"
 
-          "$TOOLS/apksigner" verify \
-            --verbose \
-            --print-certs \
-            "$SIGNED"
-
+          "$TOOLS/apksigner" verify --verbose --print-certs "$SIGNED"
           "$TOOLS/zipalign" -c -p 4 "$SIGNED"
 
           cd "$GITHUB_WORKSPACE/release"
           sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
-
-          echo "Signed APK verified successfully."
 
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
