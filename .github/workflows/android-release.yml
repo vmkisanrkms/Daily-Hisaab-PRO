@@ -25,23 +25,62 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            for CANDIDATE in \
+              /usr/local/lib/android/sdk \
+              /opt/android-sdk \
+              "$HOME/Android/Sdk"; do
+              if [ -d "$CANDIDATE" ]; then
+                SDK="$CANDIDATE"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK not found on runner."
+            exit 1
+          fi
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager -print -quit 2>/dev/null || true)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found in Android SDK."
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+
+          echo "SDK located at: $SDK"
+          "$SDKMANAGER" --version
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Android SDK: $ANDROID_HOME"
-          sdkmanager --version
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
 
-          sdkmanager --install \
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          yes | sdkmanager --licenses
+          yes | "$SDKMANAGER" --licenses
 
       - name: Verify Android SDK
         shell: bash
@@ -54,7 +93,7 @@ jobs:
 
           echo "Android SDK verification passed."
 
-      - name: Locate Android project
+      - name: Locate or extract Android project
         shell: bash
         run: |
           set -euo pipefail
@@ -72,11 +111,11 @@ jobs:
 
           if [ -z "$SETTINGS" ]; then
             ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 4 -type f -iname '*.zip' \
+              -maxdepth 5 -type f -iname '*.zip' \
               -print -quit)"
 
             if [ -z "$ZIP_FILE" ]; then
-              echo "::error::Android project or ZIP not found."
+              echo "::error::No Gradle project or ZIP found."
               exit 1
             fi
 
@@ -89,20 +128,20 @@ jobs:
           fi
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::Gradle settings file not found."
+            echo "::error::No settings.gradle(.kts) found."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app folder not found."
+            echo "::error::Android app directory missing."
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::App Gradle build file not found."
+            echo "::error::App Gradle build file missing."
             exit 1
           fi
 
@@ -114,7 +153,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Verify Gradle project
+      - name: Verify project configuration
         shell: bash
         run: |
           set -euo pipefail
@@ -125,21 +164,27 @@ jobs:
           test -f settings.gradle || \
             test -f settings.gradle.kts
 
-          echo "Gradle project verification passed."
+          echo "Gradle configuration found."
 
       - name: Build Release APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
+
           gradle --no-daemon clean assembleRelease
 
-      - name: Verify APK
+      - name: Verify and prepare APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
+
+          if [ ! -d "$APK_DIR" ]; then
+            echo "::error::Release APK directory not found."
+            exit 1
+          fi
 
           APK="$(find "$APK_DIR" -maxdepth 1 \
             -type f -name '*.apk' -print -quit)"
@@ -157,7 +202,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/release"
           sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
 
-          echo "APK verification passed."
+          echo "APK artifact prepared."
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
