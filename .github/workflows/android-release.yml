@@ -45,7 +45,7 @@ jobs:
           fi
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK not found on runner."
+            echo "::error::Android SDK not found."
             exit 1
           fi
 
@@ -53,7 +53,7 @@ jobs:
             -type f -name sdkmanager -print -quit 2>/dev/null || true)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found in Android SDK."
+            echo "::error::sdkmanager not found."
             exit 1
           fi
 
@@ -62,7 +62,7 @@ jobs:
           echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
-          echo "SDK located at: $SDK"
+          echo "SDK found at $SDK"
           "$SDKMANAGER" --version
 
       - name: Install Android SDK packages
@@ -73,14 +73,12 @@ jobs:
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager -print -quit)"
 
-          yes | "$SDKMANAGER" --licenses || true
-
           "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --licenses < /dev/null
 
       - name: Verify Android SDK
         shell: bash
@@ -115,7 +113,7 @@ jobs:
               -print -quit)"
 
             if [ -z "$ZIP_FILE" ]; then
-              echo "::error::No Gradle project or ZIP found."
+              echo "::error::Android project or ZIP not found."
               exit 1
             fi
 
@@ -128,20 +126,20 @@ jobs:
           fi
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::No settings.gradle(.kts) found."
+            echo "::error::Gradle settings file not found."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app directory missing."
+            echo "::error::Android app directory not found."
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::App Gradle build file missing."
+            echo "::error::App Gradle build file not found."
             exit 1
           fi
 
@@ -153,7 +151,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Verify project configuration
+      - name: Verify Gradle project
         shell: bash
         run: |
           set -euo pipefail
@@ -164,7 +162,7 @@ jobs:
           test -f settings.gradle || \
             test -f settings.gradle.kts
 
-          echo "Gradle configuration found."
+          echo "Gradle project verification passed."
 
       - name: Build Release APK
         shell: bash
