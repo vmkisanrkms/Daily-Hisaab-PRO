@@ -1,4 +1,3 @@
-
 name: Daily Hisaab PRO Android Release
 
 on:
@@ -12,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Release APK
+    name: Build and Sign Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -78,7 +77,15 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          "$SDKMANAGER" --licenses < /dev/null
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          yes | "$SDKMANAGER" --licenses || true
 
       - name: Verify Android SDK
         shell: bash
@@ -87,7 +94,8 @@ jobs:
 
           test -d "$ANDROID_HOME/platform-tools"
           test -d "$ANDROID_HOME/platforms/android-36"
-          test -d "$ANDROID_HOME/build-tools/36.0.0"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
 
           echo "Android SDK verification passed."
 
@@ -172,17 +180,57 @@ jobs:
 
           gradle --no-daemon clean assembleRelease
 
-      - name: Verify and prepare APK
+      - name: Prepare signing key
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
 
-          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
-
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory not found."
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing."
             exit 1
           fi
+
+          SIGN_DIR="$RUNNER_TEMP/daily-hisaab-signing"
+          mkdir -p "$SIGN_DIR"
+          chmod 700 "$SIGN_DIR"
+
+          KEYSTORE="$SIGN_DIR/release.jks"
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE"
+
+          chmod 600 "$KEYSTORE"
+
+          if [ ! -s "$KEYSTORE" ]; then
+            echo "::error::Keystore file is empty."
+            exit 1
+          fi
+
+          echo "SIGN_DIR=$SIGN_DIR" >> "$GITHUB_ENV"
+          echo "KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+
+          echo "Keystore file prepared."
+
+      - name: Align, sign and verify APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || \
+             [ -z "$ANDROID_KEY_ALIAS" ] || \
+             [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::One or more signing secrets are missing."
+            exit 1
+          fi
+
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
 
           APK="$(find "$APK_DIR" -maxdepth 1 \
             -type f -name '*.apk' -print -quit)"
@@ -194,18 +242,35 @@ jobs:
 
           mkdir -p "$GITHUB_WORKSPACE/release"
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO.apk"
+          ALIGNED="$RUNNER_TEMP/Daily-Hisaab-PRO-aligned.apk"
+          SIGNED="$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO.apk"
+
+          "$TOOLS/zipalign" -f -p 4 "$APK" "$ALIGNED"
+
+          "$TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$SIGNED" \
+            "$ALIGNED"
+
+          "$TOOLS/apksigner" verify \
+            --verbose \
+            --print-certs \
+            "$SIGNED"
+
+          "$TOOLS/zipalign" -c -p 4 "$SIGNED"
 
           cd "$GITHUB_WORKSPACE/release"
           sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
 
-          echo "APK artifact prepared."
+          echo "Signed APK verified successfully."
 
-      - name: Upload Release APK
+      - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Daily-Hisaab-PRO-Release-APK
+          name: Daily-Hisaab-PRO-Signed-Release-APK
           path: |
             release/Daily-Hisaab-PRO.apk
             release/SHA256SUMS.txt
