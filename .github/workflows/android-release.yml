@@ -34,6 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
@@ -88,7 +89,7 @@ jobs:
           test -x "$TOOLS/zipalign"
           test -x "$TOOLS/aapt"
 
-      - name: Locate project or extract source ZIP
+      - name: Locate project or extract fixed source ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -103,39 +104,34 @@ jobs:
 
           SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
 
-          if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_PHASE4_GITHUB_ACTIONS_BUILD_READY.zip"
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR="$(dirname "$SETTINGS")"
+            echo "Using project files committed directly to repository."
+          else
+            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_KOTLIN_ERRORS_FIXED.zip"
 
             if [ ! -f "$ZIP_FILE" ]; then
-              mapfile -t CANDIDATES < <(
-                find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
-                  -name 'Daily_Hisaab_PRO*.zip' -print | sort
-              )
-
-              if [ "${#CANDIDATES[@]}" -ne 1 ]; then
-                echo "::error::Commit project files directly or place exactly one Daily_Hisaab_PRO*.zip in repository root."
-                printf 'ZIP candidates: %s\n' "${CANDIDATES[*]:-none}"
-                exit 1
-              fi
-
-              ZIP_FILE="${CANDIDATES[0]}"
+              echo "::error::Daily_Hisaab_PRO_KOTLIN_ERRORS_FIXED.zip not found in repository root."
+              echo "Upload the fixed ZIP or commit the Android project files directly."
+              exit 1
             fi
 
             EXTRACT_DIR="$RUNNER_TEMP/daily-hisaab-project"
             mkdir -p "$EXTRACT_DIR"
             unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
             SETTINGS="$(find_settings "$EXTRACT_DIR")"
-          fi
 
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle(.kts) not found."
-            exit 1
-          fi
+            if [ -z "$SETTINGS" ]; then
+              echo "::error::settings.gradle(.kts) not found inside ZIP."
+              exit 1
+            fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS")"
+            PROJECT_DIR="$(dirname "$SETTINGS")"
+          fi
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::app module missing."
+            echo "::error::app module missing: $PROJECT_DIR/app"
             exit 1
           fi
 
@@ -204,6 +200,7 @@ jobs:
           chmod 700 "$SIGN_DIR"
 
           KEYSTORE="$SIGN_DIR/release.jks"
+
           printf '%s' "$ANDROID_KEYSTORE_BASE64" \
             | base64 --decode > "$KEYSTORE"
 
