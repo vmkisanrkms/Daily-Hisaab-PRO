@@ -1,4 +1,3 @@
-
 name: Daily Hisaab PRO Android Release
 
 on:
@@ -115,11 +114,11 @@ jobs:
           SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip"
+            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_AUDITED_V29.zip"
 
             if [ ! -f "$ZIP_FILE" ]; then
-              echo "::error::Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip not found."
-              echo "Upload the V29 source ZIP to the repository root."
+              echo "::error::Daily_Hisaab_PRO_FINAL_AUDITED_V29.zip not found."
+              echo "Ensure the ZIP is uploaded to the repository root."
               exit 1
             fi
 
@@ -132,6 +131,7 @@ jobs:
 
           if [ -z "$SETTINGS" ]; then
             echo "::error::settings.gradle(.kts) not found."
+            echo "The ZIP must contain a valid Android Gradle project."
             exit 1
           fi
 
