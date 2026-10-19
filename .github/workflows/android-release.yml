@@ -29,7 +29,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Locate Android SDK
         shell: bash
@@ -67,6 +66,12 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -77,10 +82,11 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          test -d "$ANDROID_HOME/platforms/android-36"
+          test -x "$TOOLS/apksigner"
+          test -x "$TOOLS/zipalign"
+          test -x "$TOOLS/aapt"
 
       - name: Locate project or extract source ZIP
         shell: bash
@@ -107,7 +113,7 @@ jobs:
               )
 
               if [ "${#CANDIDATES[@]}" -ne 1 ]; then
-                echo "::error::Commit project files directly or put exactly one Daily_Hisaab_PRO*.zip in repository root."
+                echo "::error::Commit project files directly or place exactly one Daily_Hisaab_PRO*.zip in repository root."
                 printf 'ZIP candidates: %s\n' "${CANDIDATES[*]:-none}"
                 exit 1
               fi
@@ -272,8 +278,8 @@ jobs:
           cd "$GITHUB_WORKSPACE/release"
           sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
 
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" \
-            dump badging Daily-Hisaab-PRO.apk > APK_BADGING.txt
+          "$TOOLS/aapt" dump badging \
+            Daily-Hisaab-PRO.apk > APK_BADGING.txt
 
       - name: Upload signed APK and verification files
         if: success()
