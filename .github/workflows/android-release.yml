@@ -62,7 +62,7 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
           echo "$SDK/platform-tools" >> "$GITHUB_PATH"
 
-          echo "Android SDK found."
+          echo "Android SDK located."
 
       - name: Install Android SDK packages
         shell: bash
@@ -98,8 +98,8 @@ jobs:
           set -euo pipefail
 
           find_settings() {
-            DIR="$1"
-            RESULT=""
+            local DIR="$1"
+            local RESULT=""
 
             RESULT="$(find "$DIR" \
               -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
@@ -117,22 +117,37 @@ jobs:
           SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip"
+            ZIP_FILE=""
 
-            if [ ! -f "$ZIP_FILE" ]; then
+            # Prefer V27, then the standard source ZIP.
+            for candidate in \
+              "$GITHUB_WORKSPACE/Daily_Hisaab_PRO_KOTLIN_SYNTAX_FIXED_V27.zip" \
+              "$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip"; do
+              if [ -f "$candidate" ]; then
+                ZIP_FILE="$candidate"
+                break
+              fi
+            done
+
+            # If neither preferred name exists, accept one unique ZIP only.
+            if [ -z "$ZIP_FILE" ]; then
               mapfile -t ZIPS < <(
-                find "$GITHUB_WORKSPACE" -maxdepth 3 \
-                  -type f -iname '*.zip' -print
+                find "$GITHUB_WORKSPACE" \
+                  -maxdepth 3 -type f -iname '*.zip' -print
               )
 
               if [ "${#ZIPS[@]}" -ne 1 ]; then
-                echo "::error::Project not found. Add the Android project directly or keep exactly one source ZIP."
-                printf '%s\n' "${ZIPS[@]:-No ZIP found}"
+                echo "::error::No project found and no unique source ZIP is available."
+                printf 'ZIP files found:\n'
+                printf '%s\n' "${ZIPS[@]:-None}"
+                echo "Upload the intended source ZIP or place the Android project files in the repository."
                 exit 1
               fi
 
               ZIP_FILE="${ZIPS[0]}"
             fi
+
+            echo "Using source ZIP: $ZIP_FILE"
 
             EXTRACT_DIR="$RUNNER_TEMP/daily-hisaab-project"
             mkdir -p "$EXTRACT_DIR"
@@ -142,14 +157,14 @@ jobs:
           fi
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle(.kts) not found."
+            echo "::error::settings.gradle(.kts) not found in the selected project."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app directory not found."
+            echo "::error::Android app directory not found: $PROJECT_DIR/app"
             exit 1
           fi
 
@@ -160,7 +175,7 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project located: $PROJECT_DIR"
+          echo "Selected project: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -232,7 +247,7 @@ jobs:
           APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
 
           if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory not found."
+            echo "::error::Release APK directory not found: $APK_DIR"
             exit 1
           fi
 
