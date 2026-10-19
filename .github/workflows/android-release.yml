@@ -100,7 +100,7 @@ jobs:
           SETTINGS="$(find_settings "$GITHUB_WORKSPACE" | head -n 1 || true)"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_SOURCE_CODE.zip"
+            Daily_Hisaab_PRO_KOTLIN_SYNTAX_FIXED_V27.zip"
 
             if [ ! -f "$ZIP_FILE" ]; then
               mapfile -t ZIPS < <(
