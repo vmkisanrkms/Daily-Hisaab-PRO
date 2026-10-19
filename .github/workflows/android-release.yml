@@ -108,11 +108,11 @@ jobs:
             PROJECT_DIR="$(dirname "$SETTINGS")"
             echo "Using project files committed directly to repository."
           else
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_KOTLIN_ERRORS_FIXED.zip"
+            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FULL_LANGUAGE_TRANSLATION_FIXED.zip"
 
             if [ ! -f "$ZIP_FILE" ]; then
-              echo "::error::Daily_Hisaab_PRO_KOTLIN_ERRORS_FIXED.zip not found in repository root."
-              echo "Upload the fixed ZIP or commit the Android project files directly."
+              echo "::error::Daily_Hisaab_PRO_FULL_LANGUAGE_TRANSLATION_FIXED.zip not found in repository root."
+              echo "Upload the new fixed ZIP to the repository root, or commit the Android project files directly."
               exit 1
             fi
 
