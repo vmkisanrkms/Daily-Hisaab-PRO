@@ -1,3 +1,4 @@
+
 name: Daily Hisaab PRO Android Release
 
 on:
@@ -9,10 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: daily-hisaab-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build and Sign Release APK
+    name: Test, Build, Sign and Verify APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -23,12 +29,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Locate Android SDK
         shell: bash
         run: |
           set -euo pipefail
-
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
@@ -71,99 +77,102 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -euo pipefail
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
-      - name: Verify Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -d "$ANDROID_HOME/platform-tools"
-          test -d "$ANDROID_HOME/platforms/android-36"
           test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
           test -x "$ANDROID_HOME/build-tools/36.0.0/zipalign"
 
-          echo "Android SDK verification passed."
-
-      - name: Locate or extract Android project
+      - name: Locate project or extract source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           find_settings() {
-            local DIR="$1"
-            local RESULT=""
-
-            RESULT="$(find "$DIR" \
+            find "$1" \
               -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
-              -type f -name settings.gradle.kts -print -quit 2>/dev/null || true)"
-
-            if [ -z "$RESULT" ]; then
-              RESULT="$(find "$DIR" \
-                -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
-                -type f -name settings.gradle -print -quit 2>/dev/null || true)"
-            fi
-
-            printf '%s' "$RESULT"
+              \( -type f -name settings.gradle.kts \
+              -o -type f -name settings.gradle \) \
+              -print -quit 2>/dev/null || true
           }
 
           SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
 
           if [ -z "$SETTINGS" ]; then
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FINAL_AUDITED_V29.zip"
+            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_PHASE4_GITHUB_ACTIONS_BUILD_READY.zip"
 
             if [ ! -f "$ZIP_FILE" ]; then
-              echo "::error::Daily_Hisaab_PRO_FINAL_AUDITED_V29.zip not found."
-              echo "Ensure the ZIP is uploaded to the repository root."
-              exit 1
+              mapfile -t CANDIDATES < <(
+                find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
+                  -name 'Daily_Hisaab_PRO*.zip' -print | sort
+              )
+
+              if [ "${#CANDIDATES[@]}" -ne 1 ]; then
+                echo "::error::Commit project files directly or put exactly one Daily_Hisaab_PRO*.zip in repository root."
+                printf 'ZIP candidates: %s\n' "${CANDIDATES[*]:-none}"
+                exit 1
+              fi
+
+              ZIP_FILE="${CANDIDATES[0]}"
             fi
 
             EXTRACT_DIR="$RUNNER_TEMP/daily-hisaab-project"
             mkdir -p "$EXTRACT_DIR"
             unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
-
             SETTINGS="$(find_settings "$EXTRACT_DIR")"
           fi
 
           if [ -z "$SETTINGS" ]; then
             echo "::error::settings.gradle(.kts) not found."
-            echo "The ZIP must contain a valid Android Gradle project."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app directory not found."
+            echo "::error::app module missing."
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::app/build.gradle(.kts) not found."
+            echo "::error::app/build.gradle(.kts) missing."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Project located: $PROJECT_DIR"
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      - name: Build Release APK
+      - name: Generate Gradle Wrapper if missing
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          gradle --version
-          gradle --no-daemon clean assembleRelease
+          if [ ! -f gradlew ] || \
+             [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper \
+              --gradle-version 8.11.1 \
+              --distribution-type bin
+          fi
+
+          chmod +x gradlew
+          test -s gradle/wrapper/gradle-wrapper.jar
+          test -s gradle/wrapper/gradle-wrapper.properties
+          ./gradlew --version
+
+      - name: Run unit tests and build Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          ./gradlew --no-daemon --stacktrace \
+            clean test assembleRelease
 
       - name: Prepare signing key
         shell: bash
@@ -174,19 +183,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ] || \
-             [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ] || \
-             [ -z "${ANDROID_KEY_ALIAS:-}" ]; then
-            echo "::error::Keystore secrets are missing."
-            exit 1
-          fi
+          for name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub secret: $name"
+              exit 1
+            fi
+          done
 
           SIGN_DIR="$RUNNER_TEMP/daily-hisaab-signing"
           mkdir -p "$SIGN_DIR"
           chmod 700 "$SIGN_DIR"
 
           KEYSTORE="$SIGN_DIR/release.jks"
-
           printf '%s' "$ANDROID_KEYSTORE_BASE64" \
             | base64 --decode > "$KEYSTORE"
 
@@ -200,7 +211,7 @@ jobs:
 
           echo "KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
 
-      - name: Align, sign and verify APK
+      - name: Align, sign, verify and checksum APK
         shell: bash
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -209,28 +220,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${ANDROID_KEYSTORE_PASSWORD:-}" ] || \
-             [ -z "${ANDROID_KEY_ALIAS:-}" ] || \
-             [ -z "${ANDROID_KEY_PASSWORD:-}" ]; then
-            echo "::error::Signing secrets are missing."
-            exit 1
-          fi
+          for name in \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub secret: $name"
+              exit 1
+            fi
+          done
 
           TOOLS="$ANDROID_HOME/build-tools/36.0.0"
           APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
 
           if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory not found."
+            echo "::error::Release APK directory missing."
             exit 1
           fi
 
           mapfile -t APKS < <(
-            find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' -print
+            find "$APK_DIR" -maxdepth 1 -type f \
+              -name '*.apk' -print | sort
           )
 
           if [ "${#APKS[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one APK; found ${#APKS[@]}."
-            printf '%s\n' "${APKS[@]:-No APK found}"
+            echo "::error::Expected one APK, found ${#APKS[@]}."
+            printf '%s\n' "${APKS[@]:-none}"
             exit 1
           fi
 
@@ -250,23 +265,36 @@ jobs:
             "$ALIGNED"
 
           "$TOOLS/apksigner" verify \
-            --verbose \
-            --print-certs \
-            "$SIGNED"
+            --verbose --print-certs "$SIGNED"
 
           "$TOOLS/zipalign" -c -p 4 "$SIGNED"
 
           cd "$GITHUB_WORKSPACE/release"
           sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
 
-          echo "APK signing and verification passed."
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" \
+            dump badging Daily-Hisaab-PRO.apk > APK_BADGING.txt
 
-      - name: Upload Signed Release APK
+      - name: Upload signed APK and verification files
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Daily-Hisaab-PRO-Signed-Release-APK
           path: |
             release/Daily-Hisaab-PRO.apk
             release/SHA256SUMS.txt
+            release/APK_BADGING.txt
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build and test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Daily-Hisaab-PRO-Build-Diagnostics
+          path: |
+            **/build/reports/tests/**
+            **/build/reports/problems/**
+            **/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 7
