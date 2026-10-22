@@ -1,5 +1,5 @@
 
-name: Daily Hisaab PRO Android Release
+name: Facebook Video Downloader APK
 
 on:
   workflow_dispatch:
@@ -11,14 +11,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: daily-hisaab-release-${{ github.ref }}
+  group: video-downloader-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Test, Build, Sign and Verify APK
+    name: Build and Verify Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
@@ -30,126 +30,50 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate Android SDK
-        shell: bash
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
         run: |
           set -euo pipefail
-
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            for candidate in \
-              /usr/local/lib/android/sdk \
-              /opt/android-sdk \
-              "$HOME/Android/Sdk"; do
-              if [ -d "$candidate" ]; then
-                SDK="$candidate"
-                break
-              fi
-            done
-          fi
-
-          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK not found."
-            exit 1
-          fi
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager -print -quit 2>/dev/null || true)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found."
-            exit 1
-          fi
-
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          "$SDKMANAGER" --install \
+          sdkmanager --install \
             "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
-          test -d "$ANDROID_HOME/platforms/android-36"
-          test -x "$TOOLS/apksigner"
-          test -x "$TOOLS/zipalign"
-          test -x "$TOOLS/aapt"
-
-      - name: Locate project or extract fixed source ZIP
+      - name: Locate Android project
         shell: bash
         run: |
           set -euo pipefail
 
-          find_settings() {
-            find "$1" \
-              -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
-              \( -type f -name settings.gradle.kts \
-              -o -type f -name settings.gradle \) \
-              -print -quit 2>/dev/null || true
-          }
+          SETTINGS="$(find . \
+            -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
+            \( -name settings.gradle.kts -o -name settings.gradle \) \
+            -type f -print -quit)"
 
-          SETTINGS="$(find_settings "$GITHUB_WORKSPACE")"
-
-          if [ -n "$SETTINGS" ]; then
-            PROJECT_DIR="$(dirname "$SETTINGS")"
-            echo "Using project files committed directly to repository."
-          else
-            ZIP_FILE="$GITHUB_WORKSPACE/Daily_Hisaab_PRO_FULL_LANGUAGE_TRANSLATION_FIXED.zip"
-
-            if [ ! -f "$ZIP_FILE" ]; then
-              echo "::error::Daily_Hisaab_PRO_FULL_LANGUAGE_TRANSLATION_FIXED.zip not found in repository root."
-              echo "Upload the new fixed ZIP to the repository root, or commit the Android project files directly."
-              exit 1
-            fi
-
-            EXTRACT_DIR="$RUNNER_TEMP/daily-hisaab-project"
-            mkdir -p "$EXTRACT_DIR"
-            unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
-
-            SETTINGS="$(find_settings "$EXTRACT_DIR")"
-
-            if [ -z "$SETTINGS" ]; then
-              echo "::error::settings.gradle(.kts) not found inside ZIP."
-              exit 1
-            fi
-
-            PROJECT_DIR="$(dirname "$SETTINGS")"
-          fi
-
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::app module missing: $PROJECT_DIR/app"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle(.kts) not found."
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "::error::app/build.gradle(.kts) missing."
+          PROJECT_DIR="$(dirname "$SETTINGS")"
+
+          test -d "$PROJECT_DIR/app"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "::error::Android app Gradle file missing."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project located: $PROJECT_DIR"
 
-      - name: Set up Gradle 8.11.1
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '8.9'
 
-      - name: Generate Gradle Wrapper if missing
+      - name: Generate Gradle Wrapper if needed
         shell: bash
         run: |
           set -euo pipefail
@@ -158,146 +82,55 @@ jobs:
           if [ ! -f gradlew ] || \
              [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
             gradle wrapper \
-              --gradle-version 8.11.1 \
+              --gradle-version 8.9 \
               --distribution-type bin
           fi
 
           chmod +x gradlew
-          test -s gradle/wrapper/gradle-wrapper.jar
-          test -s gradle/wrapper/gradle-wrapper.properties
-          ./gradlew --version
+          ./gradlew --no-daemon --version
 
-      - name: Run unit tests and build Release APK
+      - name: Run tests and build Debug APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
           ./gradlew --no-daemon --stacktrace \
-            clean test assembleRelease
+            clean test assembleDebug
 
-      - name: Prepare signing key
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
 
-          for name in \
-            ANDROID_KEYSTORE_BASE64 \
-            ANDROID_KEYSTORE_PASSWORD \
-            ANDROID_KEY_ALIAS; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing GitHub secret: $name"
-              exit 1
-            fi
-          done
-
-          SIGN_DIR="$RUNNER_TEMP/daily-hisaab-signing"
-          mkdir -p "$SIGN_DIR"
-          chmod 700 "$SIGN_DIR"
-
-          KEYSTORE="$SIGN_DIR/release.jks"
-
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" \
-            | base64 --decode > "$KEYSTORE"
-
-          chmod 600 "$KEYSTORE"
-          test -s "$KEYSTORE"
-
-          keytool -list \
-            -keystore "$KEYSTORE" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$ANDROID_KEY_ALIAS" >/dev/null
-
-          echo "KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
-
-      - name: Align, sign, verify and checksum APK
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          for name in \
-            ANDROID_KEYSTORE_PASSWORD \
-            ANDROID_KEY_ALIAS \
-            ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Missing GitHub secret: $name"
-              exit 1
-            fi
-          done
-
-          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
-          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/release"
-
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Release APK directory missing."
-            exit 1
-          fi
-
-          mapfile -t APKS < <(
-            find "$APK_DIR" -maxdepth 1 -type f \
-              -name '*.apk' -print | sort
-          )
-
-          if [ "${#APKS[@]}" -ne 1 ]; then
-            echo "::error::Expected one APK, found ${#APKS[@]}."
-            printf '%s\n' "${APKS[@]:-none}"
+          if [ ! -s "$APK" ]; then
+            echo "::error::Debug APK was not generated."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
+          cp "$APK" "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
-          ALIGNED="$RUNNER_TEMP/Daily-Hisaab-PRO-aligned.apk"
-          SIGNED="$GITHUB_WORKSPACE/release/Daily-Hisaab-PRO.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
+            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
-          "$TOOLS/zipalign" -f -p 4 "${APKS[0]}" "$ALIGNED"
+          sha256sum "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
+            > "$GITHUB_WORKSPACE/release/SHA256SUMS.txt"
 
-          "$TOOLS/apksigner" sign \
-            --ks "$KEYSTORE" \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out "$SIGNED" \
-            "$ALIGNED"
-
-          "$TOOLS/apksigner" verify \
-            --verbose --print-certs "$SIGNED"
-
-          "$TOOLS/zipalign" -c -p 4 "$SIGNED"
-
-          cd "$GITHUB_WORKSPACE/release"
-          sha256sum Daily-Hisaab-PRO.apk > SHA256SUMS.txt
-
-          "$TOOLS/aapt" dump badging \
-            Daily-Hisaab-PRO.apk > APK_BADGING.txt
-
-      - name: Upload signed APK and verification files
-        if: success()
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Daily-Hisaab-PRO-Signed-Release-APK
+          name: Facebook-Video-Downloader-APK
           path: |
-            release/Daily-Hisaab-PRO.apk
+            release/Facebook-Video-Downloader.apk
             release/SHA256SUMS.txt
-            release/APK_BADGING.txt
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build and test diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Daily-Hisaab-PRO-Build-Diagnostics
+          name: Video-Downloader-Build-Logs
           path: |
             **/build/reports/tests/**
             **/build/reports/problems/**
-            **/build/outputs/logs/**
           if-no-files-found: warn
           retention-days: 7
