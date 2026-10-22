@@ -18,7 +18,7 @@ jobs:
   build:
     name: Build and Verify Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout repository
@@ -32,24 +32,34 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 'latest'
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+          accept-android-sdk-licenses: true
 
-      - name: Install Android SDK
+      - name: Verify Android SDK
+        shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
 
       - name: Locate Android project
         shell: bash
         run: |
           set -euo pipefail
 
-          SETTINGS="$(find . \
+          SETTINGS="$(find "$GITHUB_WORKSPACE" \
             -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
-            -type f -print -quit)"
+            \( -type f -name settings.gradle.kts \
+            -o -type f -name settings.gradle \) \
+            -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
             echo "::error::settings.gradle(.kts) not found."
@@ -67,20 +77,22 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Generate Gradle Wrapper if needed
+      - name: Generate and verify Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          if [ ! -f gradlew ] || \
-             [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+          if [ ! -s gradlew ] || \
+             [ ! -s gradle/wrapper/gradle-wrapper.jar ] || \
+             [ ! -s gradle/wrapper/gradle-wrapper.properties ]; then
             gradle wrapper \
               --gradle-version 8.9 \
               --distribution-type bin
@@ -98,20 +110,24 @@ jobs:
           ./gradlew --no-daemon --stacktrace \
             clean test assembleDebug
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
             echo "::error::Debug APK was not generated."
+            find app/build/outputs -type f -name '*.apk' -print || true
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/release"
-          cp "$APK" "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
+
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
             "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
-          sha256sum "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
+          sha256sum \
+            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
             > "$GITHUB_WORKSPACE/release/SHA256SUMS.txt"
 
       - name: Upload APK
@@ -132,5 +148,6 @@ jobs:
           path: |
             **/build/reports/tests/**
             **/build/reports/problems/**
+            **/build/outputs/logs/**
           if-no-files-found: warn
           retention-days: 7
