@@ -30,25 +30,49 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK tools
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 'latest'
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
-          accept-android-sdk-licenses: true
 
-      - name: Verify Android SDK
+      - name: Install and verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          test -d "$ANDROID_HOME/platforms/android-35"
-          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
-          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "::error::Android SDK directory not found."
+            exit 1
+          fi
+
+          SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            -type f -name sdkmanager -print -quit 2>/dev/null || true)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found."
+            exit 1
+          fi
+
+          echo "Android SDK: $SDK"
+          echo "SDK Manager: $SDKMANAGER"
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$SDK" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            --sdk_root="$SDK" \
+            --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          test -d "$SDK/platforms/android-35"
+          test -x "$SDK/build-tools/35.0.0/apksigner"
+          test -x "$SDK/build-tools/35.0.0/zipalign"
+
+          echo "Android SDK packages installed successfully."
 
       - name: Locate Android project
         shell: bash
@@ -63,21 +87,25 @@ jobs:
 
           if [ -z "$SETTINGS" ]; then
             echo "::error::settings.gradle(.kts) not found."
+            echo "Upload the Android project files to the repository."
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS")"
 
-          test -d "$PROJECT_DIR/app"
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "::error::Android app module not found."
+            exit 1
+          fi
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Android app Gradle file missing."
+            echo "::error::app/build.gradle(.kts) is missing."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -99,6 +127,10 @@ jobs:
           fi
 
           chmod +x gradlew
+
+          test -s gradle/wrapper/gradle-wrapper.jar
+          test -s gradle/wrapper/gradle-wrapper.properties
+
           ./gradlew --no-daemon --version
 
       - name: Run tests and build Debug APK
@@ -123,12 +155,21 @@ jobs:
           cp "$APK" \
             "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify \
+          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          "$TOOLS/apksigner" verify \
+            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
+
+          "$TOOLS/zipalign" -c -p 4 \
             "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
 
           sha256sum \
             "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
             > "$GITHUB_WORKSPACE/release/SHA256SUMS.txt"
+
+          "$TOOLS/aapt" dump badging \
+            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
+            > "$GITHUB_WORKSPACE/release/APK_BADGING.txt"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -137,6 +178,7 @@ jobs:
           path: |
             release/Facebook-Video-Downloader.apk
             release/SHA256SUMS.txt
+            release/APK_BADGING.txt
           if-no-files-found: error
           retention-days: 14
 
