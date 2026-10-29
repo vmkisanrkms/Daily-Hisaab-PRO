@@ -1,5 +1,5 @@
 
-name: Facebook Video Downloader APK
+name: Majdoor Hisaab PRO Phase 45 - Final Kotlin Workflow Fix
 
 on:
   workflow_dispatch:
@@ -11,185 +11,280 @@ permissions:
   contents: read
 
 concurrency:
-  group: video-downloader-${{ github.ref }}
+  group: majdoor-hisaab-pro-phase45-release
   cancel-in-progress: false
 
+env:
+  JAVA_VERSION: "17"
+  ANDROID_API: "36"
+  BUILD_TOOLS: "36.0.0"
+  ZIP_NAME: "Majdoor_Hisaab_PRO_FINAL_SALARY_EMPLOYEE_V9.zip"
+  EXPECTED_PACKAGE: "com.majdoor.hisaabpro"
+  APK_NAME: "Majdoor-Hisaab-PRO-PHASE45-RELEASE.apk"
+
 jobs:
-  build:
-    name: Build and Verify Android APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+  build-release:
+    name: Build and sign Phase 45 Release APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Select and verify source ZIP
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected="$ZIP_NAME"
+
+          if [ ! -f "$selected" ]; then
+            mapfile -t archives < <(
+              find . -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' | sort
+            )
+
+            if [ "${#archives[@]}" -eq 1 ]; then
+              selected="${archives[0]}"
+              echo "Using the only ZIP: $selected"
+            else
+              echo "::error::Could not uniquely select source ZIP."
+              echo "Ensure ZIP_NAME matches the uploaded V9 ZIP."
+              printf '%s\n' "${archives[@]}"
+              exit 1
+            fi
+          fi
+
+          unzip -t "$selected"
+          sha256sum "$selected"
+          echo "zip_name=$selected" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Set up Android SDK tools
-        uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: 'latest'
+          packages: platform-tools
 
-      - name: Install and verify Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
-          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "::error::Android SDK directory not found."
-            exit 1
-          fi
-
-          SDKMANAGER="$(find "$SDK/cmdline-tools" \
-            -type f -name sdkmanager -print -quit 2>/dev/null || true)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager not found."
-            exit 1
-          fi
-
-          echo "Android SDK: $SDK"
-          echo "SDK Manager: $SDKMANAGER"
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$SDK" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            --sdk_root="$SDK" \
-            --install \
+          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
             "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;${BUILD_TOOLS}"
 
-          test -d "$SDK/platforms/android-35"
-          test -x "$SDK/build-tools/35.0.0/apksigner"
-          test -x "$SDK/build-tools/35.0.0/zipalign"
+          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses \
+            >/dev/null 2>&1 || true
 
-          echo "Android SDK packages installed successfully."
+      - name: Extract Android project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build-source
 
-      - name: Locate Android project
+          unzip -q "${{ steps.archive.outputs.zip_name }}" -d build-source
+
+          GRADLEW="$(
+            find build-source -type f \
+              -path '*/original_source_project/mhp/gradlew' \
+              -not -path '*/.gradle/*' | sort | head -1
+          )"
+
+          if [ -z "$GRADLEW" ]; then
+            GRADLEW="$(
+              find build-source -type f -name gradlew \
+                -not -path '*/.gradle/*' | sort | head -1
+            )"
+          fi
+
+          if [ -z "$GRADLEW" ]; then
+            echo "::error::No Gradle wrapper found inside source ZIP."
+            find build-source -maxdepth 5 -type f | sort | head -300
+            exit 1
+          fi
+
+          PROJECT_ROOT="$(dirname "$GRADLEW")"
+          chmod +x "$GRADLEW"
+
+          echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
+          echo "Android project root: $PROJECT_ROOT"
+
+      - name: Run source regression audits
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
 
-          SETTINGS="$(find "$GITHUB_WORKSPACE" \
-            -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
-            \( -type f -name settings.gradle.kts \
-            -o -type f -name settings.gradle \) \
-            -print -quit)"
+          python scripts_redesign_phase2_static_audit.py
+          python scripts_phase27_requested_ui_fixes_audit.py
+          python scripts_phase45_handover_audit.py
+          python scripts_phase29_fandi_labour_quick_entry_audit.py
+          python scripts_phase28_drive_backup_feedback_audit.py
+          python scripts_redesign_phase4_ui_audit.py
+          python scripts_redesign_phase5_attendance_audit.py
+          python scripts_redesign_phase6_worker_ledger_audit.py
+          python scripts_redesign_phase7_data_safety_audit.py
+          python scripts_redesign_phase8_batch_fixes_audit.py
+          python scripts_redesign_phase9_remaining_audit.py
+          python scripts_date_field_report_audit.py
+          python scripts_report_k03_k04_audit.py
+          python scripts_redesign_phase11_launch_security_audit.py
+          python scripts_redesign_phase12_attendance_bulk_calendar_audit.py
+          python scripts_redesign_phase13_work_wages_profitability_audit.py
+          python scripts_redesign_phase14_reports_pdf_audit.py
+          python scripts_redesign_phase15_l07_field_detail_audit.py
+          python scripts_redesign_phase16_settings_security_audit.py
+          python scripts_redesign_phase17_accounting_integrity_audit.py
+          python scripts_redesign_phase18_ganna_chhilai_audit.py
+          python scripts_redesign_phase19_ganna_parchi_audit.py
+          python scripts_redesign_phase20_backup_restore_audit.py
+          python scripts_need_remote_consent_static_check.py
+          python scripts_redesign_phase21_shared_ui_audit.py
+          python scripts_phase23_remaining_master_audit.py
+          python scripts_phase24_five_remaining_points_audit.py
+          python scripts_gradle_wrapper_bootstrap_audit.py
 
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::settings.gradle(.kts) not found."
-            echo "Upload the Android project files to the repository."
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "::error::Android app module not found."
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
-             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::app/build.gradle(.kts) is missing."
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
-
-      - name: Set up Gradle
+      - name: Provision Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: 8.11.1
 
-      - name: Generate and verify Gradle Wrapper
+      - name: Bootstrap and verify Gradle Wrapper
+        working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
+          bash scripts/bootstrap-gradle-wrapper.sh
+          ./gradlew --version
 
-          if [ ! -s gradlew ] || \
-             [ ! -s gradle/wrapper/gradle-wrapper.jar ] || \
-             [ ! -s gradle/wrapper/gradle-wrapper.properties ]; then
-            gradle wrapper \
-              --gradle-version 8.9 \
-              --distribution-type bin
-          fi
+      - name: Compile Release Kotlin
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          ./gradlew :app:compileReleaseKotlin --no-daemon --stacktrace
 
-          chmod +x gradlew
+      - name: Run accounting regression unit tests
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          ./gradlew :app:testReleaseUnitTest --no-daemon --stacktrace
 
-          test -s gradle/wrapper/gradle-wrapper.jar
-          test -s gradle/wrapper/gradle-wrapper.properties
+      - name: Validate permanent signing secrets
+        shell: bash
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
 
-          ./gradlew --no-daemon --version
+          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing signing secret: $name"
+              echo "Check repository Settings > Secrets and variables > Actions."
+              exit 1
+            fi
+          done
 
-      - name: Run tests and build Debug APK
+          mkdir -p "$RUNNER_TEMP/release-signing"
+
+          printf '%s' "$KEYSTORE_B64" |
+            base64 --decode > "$RUNNER_TEMP/release-signing/release.jks"
+
+          test -s "$RUNNER_TEMP/release-signing/release.jks"
+
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release-signing/release.jks" \
+            >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+          keytool -list \
+            -keystore "$RUNNER_TEMP/release-signing/release.jks" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+          echo "Permanent keystore and alias validated."
+
+      - name: Print permanent Release SHA-1
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
 
-          ./gradlew --no-daemon --stacktrace \
-            clean test assembleDebug
+          echo "Signing certificate SHA-1:"
+          keytool -list -v \
+            -keystore "$KEYSTORE_FILE" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" |
+            grep -E 'SHA1:|SHA-1:'
 
-          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+      - name: Assemble Release APK
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          ./gradlew :app:clean :app:assembleRelease \
+            --no-daemon --stacktrace
 
-          if [ ! -s "$APK" ]; then
-            echo "::error::Debug APK was not generated."
-            find app/build/outputs -type f -name '*.apk' -print || true
+      - name: Validate APK package, signature and alignment
+        id: validate_apk
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(
+            find app/build/outputs/apk/release \
+              -type f -name '*.apk' \
+              -not -name '*androidTest*' | sort | head -1
+          )"
+
+          if [ -z "$APK" ]; then
+            echo "::error::Release APK not found."
+            find . -type f -name '*.apk' -print
             exit 1
           fi
 
-          mkdir -p "$GITHUB_WORKSPACE/release"
+          AAPT="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}/aapt"
+          APKSIGNER="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}/apksigner"
+          ZIPALIGN="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}/zipalign"
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
+          PACKAGE="$(
+            "$AAPT" dump badging "$APK" |
+            sed -n "s/^package: name='\([^']*\)'.*/\1/p" |
+            head -1
+          )"
 
-          TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          if [ "$PACKAGE" != "$EXPECTED_PACKAGE" ]; then
+            echo "::error::Expected package $EXPECTED_PACKAGE but found $PACKAGE"
+            exit 1
+          fi
 
-          "$TOOLS/apksigner" verify \
-            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
+          "$APKSIGNER" verify --verbose "$APK"
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK"
 
-          "$TOOLS/zipalign" -c -p 4 \
-            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk"
+          echo "Release APK certificate details:"
+          "$APKSIGNER" verify --print-certs "$APK"
 
-          sha256sum \
-            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
-            > "$GITHUB_WORKSPACE/release/SHA256SUMS.txt"
+          mkdir -p final
+          cp "$APK" "final/$APK_NAME"
 
-          "$TOOLS/aapt" dump badging \
-            "$GITHUB_WORKSPACE/release/Facebook-Video-Downloader.apk" \
-            > "$GITHUB_WORKSPACE/release/APK_BADGING.txt"
+          echo "apk_path=final/$APK_NAME" >> "$GITHUB_OUTPUT"
+          sha256sum "final/$APK_NAME"
+          ls -lh "final/$APK_NAME"
 
-      - name: Upload APK
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: Facebook-Video-Downloader-APK
-          path: |
-            release/Facebook-Video-Downloader.apk
-            release/SHA256SUMS.txt
-            release/APK_BADGING.txt
+          name: Majdoor-Hisaab-PRO-PHASE45-RELEASE
+          path: ${{ steps.project.outputs.root }}/${{ steps.validate_apk.outputs.apk_path }}
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Video-Downloader-Build-Logs
-          path: |
-            **/build/reports/tests/**
-            **/build/reports/problems/**
-            **/build/outputs/logs/**
-          if-no-files-found: warn
-          retention-days: 7
+          retention-days: 30
