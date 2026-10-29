@@ -4,8 +4,7 @@ name: Majdoor Hisaab PRO Phase 45 - Final Kotlin Workflow Fix
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -46,10 +45,9 @@ jobs:
 
             if [ "${#archives[@]}" -eq 1 ]; then
               selected="${archives[0]}"
-              echo "Using the only ZIP: $selected"
+              echo "Using the only root ZIP: $selected"
             else
               echo "::error::Could not uniquely select source ZIP."
-              echo "Ensure ZIP_NAME matches the uploaded V9 ZIP."
               printf '%s\n' "${archives[@]}"
               exit 1
             fi
@@ -68,7 +66,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: platform-tools
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         shell: bash
@@ -89,7 +87,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build-source
-
           unzip -q "${{ steps.archive.outputs.zip_name }}" -d build-source
 
           GRADLEW="$(
@@ -113,7 +110,6 @@ jobs:
 
           PROJECT_ROOT="$(dirname "$GRADLEW")"
           chmod +x "$GRADLEW"
-
           echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
           echo "Android project root: $PROJECT_ROOT"
 
@@ -152,12 +148,12 @@ jobs:
           python scripts_phase24_five_remaining_points_audit.py
           python scripts_gradle_wrapper_bootstrap_audit.py
 
-      - name: Provision Gradle
+      - name: Provision Gradle for wrapper generation
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.11.1
 
-      - name: Bootstrap and verify Gradle Wrapper
+      - name: Bootstrap and verify Gradle Wrapper JAR
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
@@ -177,7 +173,7 @@ jobs:
         run: |
           ./gradlew :app:testReleaseUnitTest --no-daemon --stacktrace
 
-      - name: Validate permanent signing secrets
+      - name: Validate required permanent signing secrets
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -189,8 +185,7 @@ jobs:
 
           for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Missing signing secret: $name"
-              echo "Check repository Settings > Secrets and variables > Actions."
+              echo "::error::Required signing secret is missing: $name"
               exit 1
             fi
           done
@@ -259,8 +254,8 @@ jobs:
 
           PACKAGE="$(
             "$AAPT" dump badging "$APK" |
-            sed -n "s/^package: name='\([^']*\)'.*/\1/p" |
-            head -1
+              sed -n "s/^package: name='\([^']*\)'.*/\1/p" |
+              head -1
           )"
 
           if [ "$PACKAGE" != "$EXPECTED_PACKAGE" ]; then
@@ -276,7 +271,6 @@ jobs:
 
           mkdir -p final
           cp "$APK" "final/$APK_NAME"
-
           echo "apk_path=final/$APK_NAME" >> "$GITHUB_OUTPUT"
           sha256sum "final/$APK_NAME"
           ls -lh "final/$APK_NAME"
