@@ -36,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           selected="$ZIP_NAME"
 
           if [ ! -f "$selected" ]; then
@@ -45,7 +46,7 @@ jobs:
 
             if [ "${#archives[@]}" -eq 1 ]; then
               selected="${archives[0]}"
-              echo "Preferred archive absent; using the only root ZIP: $selected"
+              echo "Using the only available source ZIP: $selected"
             else
               echo "::error::Could not uniquely select source ZIP."
               printf '%s\n' "${archives[@]}"
@@ -72,23 +73,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;${BUILD_TOOLS}"
 
-          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
-            --licenses >/dev/null 2>&1 || true
+          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses \
+            >/dev/null 2>&1 || true
 
       - name: Extract Android project
         id: project
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p build-source
+
           unzip -q "${{ steps.archive.outputs.zip_name }}" -d build-source
 
-          # Always prefer canonical redesign project.
           GRADLEW="$(
             find build-source -type f \
               -path '*/original_source_project/mhp/gradlew' \
@@ -97,18 +100,20 @@ jobs:
 
           if [ -z "$GRADLEW" ]; then
             GRADLEW="$(
-              find build-source -type f -name gradlew \
+              find build-source -type f \
+                -name gradlew \
                 -not -path '*/.gradle/*' | sort | head -1
             )"
           fi
 
           if [ -z "$GRADLEW" ]; then
-            echo "::error::No Gradle wrapper found."
+            echo "::error::No Gradle wrapper found inside source ZIP."
             find build-source -maxdepth 5 -type f | sort | head -300
             exit 1
           fi
 
           PROJECT_ROOT="$(dirname "$GRADLEW")"
+
           chmod +x "$GRADLEW"
 
           echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
@@ -133,6 +138,7 @@ jobs:
           python scripts_redesign_phase9_remaining_audit.py
           python scripts_daily_labour_audit_check.py
           python scripts_salary_employee_data_integrity_audit.py
+          python scripts_salary_employee_v10_final_audit.py
           python scripts_date_field_report_audit.py
           python scripts_report_k03_k04_audit.py
           python scripts_redesign_phase11_launch_security_audit.py
@@ -151,7 +157,7 @@ jobs:
           python scripts_phase24_five_remaining_points_audit.py
           python scripts_gradle_wrapper_bootstrap_audit.py
 
-      - name: Provision Gradle for wrapper generation
+      - name: Provision Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.11.1
@@ -161,6 +167,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           bash scripts/bootstrap-gradle-wrapper.sh
           ./gradlew --version
 
@@ -168,15 +175,15 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          ./gradlew :app:compileReleaseKotlin \
-            --no-daemon --stacktrace
+          set -euo pipefail
+          ./gradlew :app:compileReleaseKotlin --no-daemon --stacktrace
 
       - name: Run accounting regression unit tests
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          ./gradlew :app:testReleaseUnitTest \
-            --no-daemon --stacktrace
+          set -euo pipefail
+          ./gradlew :app:testReleaseUnitTest --no-daemon --stacktrace
 
       - name: Validate required permanent signing secrets
         shell: bash
@@ -190,7 +197,7 @@ jobs:
 
           for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Required permanent signing secret is missing: $name"
+              echo "::error::Required signing secret is missing: $name"
               exit 1
             fi
           done
@@ -202,8 +209,7 @@ jobs:
 
           test -s "$RUNNER_TEMP/release-signing/release.jks"
 
-          echo "KEYSTORE_FILE=$RUNNER_TEMP/release-signing/release.jks" \
-            >> "$GITHUB_ENV"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release-signing/release.jks" >> "$GITHUB_ENV"
           echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
@@ -220,7 +226,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Use this SHA-1 in Android OAuth client:"
+          echo "Permanent signing SHA-1:"
           keytool -list -v \
             -keystore "$KEYSTORE_FILE" \
             -storepass "$KEYSTORE_PASSWORD" \
@@ -231,8 +237,8 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          ./gradlew :app:clean :app:assembleRelease \
-            --no-daemon --stacktrace
+          set -euo pipefail
+          ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
 
       - name: Validate APK package, signature and alignment
         id: validate_apk
@@ -259,8 +265,8 @@ jobs:
 
           PACKAGE="$(
             "$AAPT" dump badging "$APK" |
-              sed -n "s/^package: name='\([^']*\)'.*/\1/p" |
-              head -1
+            sed -n "s/^package: name='\([^']*\)'.*/\1/p" |
+            head -1
           )"
 
           if [ "$PACKAGE" != "$EXPECTED_PACKAGE" ]; then
@@ -271,13 +277,14 @@ jobs:
           "$APKSIGNER" verify --verbose "$APK"
           "$ZIPALIGN" -c -P 16 -v 4 "$APK"
 
-          echo "Release APK certificate details:"
+          echo "Release certificate:"
           "$APKSIGNER" verify --print-certs "$APK"
 
           mkdir -p final
           cp "$APK" "final/$APK_NAME"
 
           echo "apk_path=final/$APK_NAME" >> "$GITHUB_OUTPUT"
+
           sha256sum "final/$APK_NAME"
           ls -lh "final/$APK_NAME"
 
