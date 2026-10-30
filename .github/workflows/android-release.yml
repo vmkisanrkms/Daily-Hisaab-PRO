@@ -45,7 +45,7 @@ jobs:
 
             if [ "${#archives[@]}" -eq 1 ]; then
               selected="${archives[0]}"
-              echo "Using the only root ZIP: $selected"
+              echo "Preferred archive absent; using the only root ZIP: $selected"
             else
               echo "::error::Could not uniquely select source ZIP."
               printf '%s\n' "${archives[@]}"
@@ -72,14 +72,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;${BUILD_TOOLS}"
 
-          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses \
-            >/dev/null 2>&1 || true
+          yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
+            --licenses >/dev/null 2>&1 || true
 
       - name: Extract Android project
         id: project
@@ -89,6 +88,7 @@ jobs:
           mkdir -p build-source
           unzip -q "${{ steps.archive.outputs.zip_name }}" -d build-source
 
+          # Always prefer canonical redesign project.
           GRADLEW="$(
             find build-source -type f \
               -path '*/original_source_project/mhp/gradlew' \
@@ -103,13 +103,14 @@ jobs:
           fi
 
           if [ -z "$GRADLEW" ]; then
-            echo "::error::No Gradle wrapper found inside source ZIP."
+            echo "::error::No Gradle wrapper found."
             find build-source -maxdepth 5 -type f | sort | head -300
             exit 1
           fi
 
           PROJECT_ROOT="$(dirname "$GRADLEW")"
           chmod +x "$GRADLEW"
+
           echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
           echo "Android project root: $PROJECT_ROOT"
 
@@ -130,6 +131,8 @@ jobs:
           python scripts_redesign_phase7_data_safety_audit.py
           python scripts_redesign_phase8_batch_fixes_audit.py
           python scripts_redesign_phase9_remaining_audit.py
+          python scripts_daily_labour_audit_check.py
+          python scripts_salary_employee_data_integrity_audit.py
           python scripts_date_field_report_audit.py
           python scripts_report_k03_k04_audit.py
           python scripts_redesign_phase11_launch_security_audit.py
@@ -165,13 +168,15 @@ jobs:
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          ./gradlew :app:compileReleaseKotlin --no-daemon --stacktrace
+          ./gradlew :app:compileReleaseKotlin \
+            --no-daemon --stacktrace
 
       - name: Run accounting regression unit tests
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
         run: |
-          ./gradlew :app:testReleaseUnitTest --no-daemon --stacktrace
+          ./gradlew :app:testReleaseUnitTest \
+            --no-daemon --stacktrace
 
       - name: Validate required permanent signing secrets
         shell: bash
@@ -185,7 +190,7 @@ jobs:
 
           for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Required signing secret is missing: $name"
+              echo "::error::Required permanent signing secret is missing: $name"
               exit 1
             fi
           done
@@ -215,7 +220,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Signing certificate SHA-1:"
+          echo "Use this SHA-1 in Android OAuth client:"
           keytool -list -v \
             -keystore "$KEYSTORE_FILE" \
             -storepass "$KEYSTORE_PASSWORD" \
@@ -259,7 +264,7 @@ jobs:
           )"
 
           if [ "$PACKAGE" != "$EXPECTED_PACKAGE" ]; then
-            echo "::error::Expected package $EXPECTED_PACKAGE but found $PACKAGE"
+            echo "::error::Expected $EXPECTED_PACKAGE but found $PACKAGE"
             exit 1
           fi
 
@@ -271,6 +276,7 @@ jobs:
 
           mkdir -p final
           cp "$APK" "final/$APK_NAME"
+
           echo "apk_path=final/$APK_NAME" >> "$GITHUB_OUTPUT"
           sha256sum "final/$APK_NAME"
           ls -lh "final/$APK_NAME"
