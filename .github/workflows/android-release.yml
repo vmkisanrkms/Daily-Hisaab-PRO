@@ -17,7 +17,7 @@ env:
   JAVA_VERSION: "17"
   ANDROID_API: "36"
   BUILD_TOOLS: "36.0.0"
-  ZIP_NAME: "Majdoor_Hisaab_PRO_SALARY_AUTO_ATTENDANCE_5PM_V34.zip"
+  ZIP_NAME: "Majdoor_Hisaab_PRO_SALARY_AUTO_ATTENDANCE_5PM_V35.zip"
   EXPECTED_PACKAGE: "com.majdoor.hisaabpro"
   APK_NAME: "Majdoor-Hisaab-PRO-PHASE45-RELEASE.apk"
 
