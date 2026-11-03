@@ -1,5 +1,5 @@
 
-name: Majdoor Hisaab PRO Phase 45 - Final Kotlin Workflow Fix
+name: Majdoor Hisaab PRO Phase 45 - V51 Final Release Build
 
 on:
   workflow_dispatch:
@@ -31,32 +31,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select and verify source ZIP
+      - name: Select and verify exact V51 source ZIP
         id: archive
         shell: bash
         run: |
           set -euo pipefail
 
-          selected="$ZIP_NAME"
-
-          if [ ! -f "$selected" ]; then
-            mapfile -t archives < <(
-              find . -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' | sort
-            )
-
-            if [ "${#archives[@]}" -eq 1 ]; then
-              selected="${archives[0]}"
-              echo "Using the only available source ZIP: $selected"
-            else
-              echo "::error::Could not uniquely select source ZIP."
-              printf '%s\n' "${archives[@]}"
-              exit 1
-            fi
+          if [ ! -f "$ZIP_NAME" ]; then
+            echo "::error::Required V51 source ZIP not found: $ZIP_NAME"
+            echo "Available ZIP files:"
+            find . -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' | sort
+            exit 1
           fi
 
-          unzip -t "$selected"
-          sha256sum "$selected"
-          echo "zip_name=$selected" >> "$GITHUB_OUTPUT"
+          unzip -t "$ZIP_NAME"
+          sha256sum "$ZIP_NAME"
+
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -67,7 +58,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools'
+          packages: platform-tools
 
       - name: Install Android SDK packages
         shell: bash
@@ -108,7 +99,7 @@ jobs:
 
           if [ -z "$GRADLEW" ]; then
             echo "::error::No Gradle wrapper found inside source ZIP."
-            find build-source -maxdepth 5 -type f | sort | head -300
+            find build-source -maxdepth 6 -type f | sort | head -300
             exit 1
           fi
 
@@ -118,6 +109,34 @@ jobs:
 
           echo "root=$PROJECT_ROOT" >> "$GITHUB_OUTPUT"
           echo "Android project root: $PROJECT_ROOT"
+
+      - name: Verify V51 audit references
+        working-directory: ${{ steps.project.outputs.root }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AUDIT_FILES=(
+            scripts_phase23_remaining_master_audit.py
+            scripts_phase24_five_remaining_points_audit.py
+            scripts_gradle_wrapper_bootstrap_audit.py
+          )
+
+          for file in "${AUDIT_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::Required audit file missing: $file"
+              exit 1
+            fi
+          done
+
+          if grep -nE 'V49|Majdoor_Hisaab_PRO_APK_BUILD_V49' \
+            "${AUDIT_FILES[@]}"; then
+            echo "::error::Old V49 source ZIP reference remains in audit scripts."
+            echo "Update the audit script to validate V51 ZIP name."
+            exit 1
+          fi
+
+          echo "No obsolete V49 reference found in selected audit scripts."
 
       - name: Run source regression audits
         working-directory: ${{ steps.project.outputs.root }}
@@ -189,13 +208,13 @@ jobs:
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KS_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          for name in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+          for name in KEYSTORE_B64 KS_PASSWORD KS_ALIAS KS_KEY_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               echo "::error::Required signing secret is missing: $name"
               exit 1
@@ -210,14 +229,14 @@ jobs:
           test -s "$RUNNER_TEMP/release-signing/release.jks"
 
           echo "KEYSTORE_FILE=$RUNNER_TEMP/release-signing/release.jks" >> "$GITHUB_ENV"
-          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-          echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
-          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          echo "KS_PASSWORD=$KS_PASSWORD" >> "$GITHUB_ENV"
+          echo "KS_ALIAS=$KS_ALIAS" >> "$GITHUB_ENV"
+          echo "KS_KEY_PASSWORD=$KS_KEY_PASSWORD" >> "$GITHUB_ENV"
 
           keytool -list \
             -keystore "$RUNNER_TEMP/release-signing/release.jks" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$KEY_ALIAS" >/dev/null
+            -storepass "$KS_PASSWORD" \
+            -alias "$KS_ALIAS" >/dev/null
 
           echo "Permanent keystore and alias validated."
 
@@ -226,16 +245,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Permanent signing SHA-1:"
           keytool -list -v \
             -keystore "$KEYSTORE_FILE" \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$KEY_ALIAS" |
+            -storepass "$KS_PASSWORD" \
+            -alias "$KS_ALIAS" |
             grep -E 'SHA1:|SHA-1:'
 
       - name: Assemble Release APK
         working-directory: ${{ steps.project.outputs.root }}
         shell: bash
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ env.KS_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ env.KS_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ env.KS_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace
